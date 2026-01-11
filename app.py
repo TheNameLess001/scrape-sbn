@@ -1,78 +1,128 @@
 import streamlit as st
-import requests
-from bs4 import BeautifulSoup
 import pandas as pd
+from bs4 import BeautifulSoup
 import time
+import re
 
-# Configuration de la page
-st.set_page_config(page_title="Mon Super Scraper", page_icon="🕷️")
+# Selenium imports
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 
-st.title("🕷️ Web Scraper avec Streamlit")
-st.markdown("Entrez une URL pour extraire les données (Titres et Liens).")
+st.set_page_config(page_title="Scraper Glovo Force", page_icon="⚡", layout="wide")
 
-# --- Barre latérale pour les options ---
-with st.sidebar:
-    st.header("Paramètres")
-    element_to_scrape = st.selectbox(
-        "Quel élément chercher ?",
-        ("h1", "h2", "h3", "a", "p")
-    )
-    user_agent = st.text_input("User Agent (Optionnel)", placeholder="Mozilla/5.0...")
+st.title("⚡ Auto-Scraper : Mode 'Chercher l'Argent'")
+st.markdown("""
+Ce mode ignore la structure du site. Il cherche simplement **le symbole monétaire (MAD, Dhs)** et capture le texte autour. Très efficace pour les sites difficiles.
+""")
 
-# --- Fonction de scraping ---
-def scrape_website(url, tag):
-    # En-têtes pour éviter d'être bloqué (anti-bot basique)
-    headers = {
-        'User-Agent': user_agent if user_agent else 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
+# --- 1. Configuration Navigateur ---
+def get_driver():
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920,1080") # Important pour voir tout le menu
     
     try:
-        response = requests.get(url, headers=headers)
-        response.raise_for_status() # Vérifie si la requête a réussi (Code 200)
+        service = Service("/usr/bin/chromedriver")
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+    except Exception:
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+    return driver
+
+# --- 2. Nouvelle Logique de Détection ---
+def extract_by_currency(soup):
+    data = []
+    seen_texts = set() # Pour éviter les doublons
+    
+    # On cherche le texte visible qui contient un prix
+    # Regex : Chiffre + Espace(optionnel) + (MAD ou Dhs ou DH)
+    price_pattern = re.compile(r'(\d+[\.,]?\d*\s*(?:MAD|Dhs|DH|€|\$)|(?:MAD|Dhs|DH|€|\$)\s*\d+[\.,]?\d*)', re.IGNORECASE)
+    
+    # On trouve tous les élements terminaux (bout de texte) qui contiennent un prix
+    price_elements = soup.find_all(string=price_pattern)
+    
+    for price_text in price_elements:
+        # On remonte de 3 niveaux pour attraper le conteneur du plat (Titre + Desc + Prix)
+        container = price_text.find_parent()
         
-        soup = BeautifulSoup(response.content, 'html.parser')
-        found_elements = soup.find_all(tag)
+        # On essaie de remonter jusqu'à trouver un bloc cohérent (div)
+        for _ in range(4):
+            if container.name in ['div', 'article', 'li'] and len(container.get_text(strip=True)) > 10:
+                break
+            if container.parent:
+                container = container.parent
         
-        data = []
-        for el in found_elements:
-            # On récupère le texte et le lien si c'est une balise <a>
-            text = el.get_text(strip=True)
-            link = el.get('href') if tag == 'a' else None
-            
-            if text: # On garde seulement s'il y a du texte
-                row = {'Texte': text}
-                if link:
-                    row['Lien'] = link
-                data.append(row)
+        full_text = container.get_text(" | ", strip=True)
+        
+        # Nettoyage et Filtres
+        if full_text not in seen_texts:
+            # On ignore les textes trop longs (c'est probablement tout le site) ou trop courts
+            if 10 < len(full_text) < 400:
                 
-        return pd.DataFrame(data)
+                # Extraction basique
+                match_price = price_pattern.search(full_text)
+                prix = match_price.group(0) if match_price else "N/A"
+                
+                # Le titre est souvent la partie avant le prix ou au début
+                parts = full_text.split('|')
+                titre = parts[0].strip()
+                
+                # Si le titre est le prix, on prend le suivant
+                if titre in prix and len(parts) > 1:
+                    titre = parts[1].strip()
 
-    except requests.exceptions.RequestException as e:
-        st.error(f"Erreur lors de la connexion au site : {e}")
-        return None
+                data.append({
+                    'Titre Estimé': titre,
+                    'Prix': prix,
+                    'Texte Complet': full_text
+                })
+                seen_texts.add(full_text)
+    
+    return data
 
-# --- Interface Principale ---
-url_input = st.text_input("URL du site web", placeholder="https://exemple.com")
-scrape_btn = st.button("Lancer le Scraping")
+# --- 3. Interface ---
+url = st.text_input("URL Glovo / Jumia / etc :", placeholder="https://glovoapp.com/...")
 
-if scrape_btn and url_input:
-    with st.spinner('Scraping en cours...'):
-        time.sleep(1) # Simulation d'attente
-        df = scrape_website(url_input, element_to_scrape)
+if st.button("Lancer le Scan 🕵️"):
+    if url:
+        status = st.empty()
+        status.info("Démarrage du navigateur...")
         
-        if df is not None and not df.empty:
-            st.success(f"Succès ! {len(df)} éléments trouvés.")
+        driver = get_driver()
+        try:
+            driver.get(url)
+            status.info("Chargement... (Veuillez patienter 5s)")
+            time.sleep(5)
             
-            # Affichage des données
-            st.dataframe(df, use_container_width=True)
+            # Gros scroll pour être sûr
+            status.info("Scroll vers le bas pour charger les images...")
+            for i in range(3):
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(2)
             
-            # Bouton de téléchargement CSV
-            csv = df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Télécharger en CSV",
-                data=csv,
-                file_name='data_scrape.csv',
-                mime='text/csv',
-            )
-        elif df is not None:
-            st.warning("Aucune donnée trouvée avec cette balise.")
+            status.info("Extraction des données...")
+            soup = BeautifulSoup(driver.page_source, 'html.parser')
+            
+            results = extract_by_currency(soup)
+            
+            if results:
+                st.success(f"Bingo ! {len(results)} plats trouvés via détection de devise.")
+                df = pd.DataFrame(results)
+                st.dataframe(df, use_container_width=True)
+                
+                csv = df.to_csv(index=False).encode('utf-8')
+                st.download_button("Télécharger CSV", csv, "menu_extract.csv", "text/csv")
+            else:
+                st.error("Toujours rien. Le site utilise peut-être des iframes ou bloque l'IP.")
+                st.text("Debug - HTML partiel : " + str(driver.page_source)[:500])
+                
+        except Exception as e:
+            st.error(f"Erreur technique : {e}")
+        finally:
+            driver.quit()
+            status.empty()
