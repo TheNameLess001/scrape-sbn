@@ -1,147 +1,126 @@
 import streamlit as st
 import pandas as pd
 from bs4 import BeautifulSoup
+import json
 import time
-import re
 import random
 
-# Selenium & Webdriver Manager
+# Selenium
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
-st.set_page_config(page_title="Scraper Menu Furtif", page_icon="🥷", layout="wide")
+st.set_page_config(page_title="Glovo JSON Extractor", page_icon="🧬", layout="wide")
 
-st.title("🥷 Auto-Scraper : Mode Furtif (Anti-Bot)")
+st.title("🧬 Extraction Chirurgicale (Via JSON caché)")
 st.markdown("""
-Ce mode utilise des techniques avancées pour masquer le robot Selenium :
-* Modification du User-Agent
-* Désactivation des indicateurs d'automatisation
-* Masquage de la variable `navigator.webdriver`
+Au lieu de lire l'écran, ce script cherche la base de données interne (`__NEXT_DATA__`) cachée dans le code source de la page.
+**Note :** Si cela échoue sur le Cloud, c'est que Glovo bloque l'adresse IP américaine du serveur. Il faudra lancer ce code sur votre PC.
 """)
 
-# --- 1. Configuration Navigateur Furtif ---
 def get_driver():
     chrome_options = Options()
-    
-    # --- LES REGLAGES CRITIQUES POUR EVITER LE BLOCAGE ---
-    chrome_options.add_argument("--headless") 
+    chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled") # Masque le contrôle auto
-    
-    # On se fait passer pour un vrai PC Windows avec Chrome récent
-    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    chrome_options.add_argument(f"user-agent={user_agent}")
-    chrome_options.add_argument("--window-size=1920,1080")
+    # User Agent standard pour passer pour un PC normal
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
     try:
-        # Configuration Streamlit Cloud
         service = Service("/usr/bin/chromedriver")
         driver = webdriver.Chrome(service=service, options=chrome_options)
-    except Exception:
-        # Configuration Locale (PC)
+    except:
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
-
-    # --- L'ASTUCE ULTIME ---
-    # On injecte du Javascript pour effacer les traces de Selenium
-    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-        "source": """
-            Object.defineProperty(navigator, 'webdriver', {
-            get: () => undefined
-            })
-        """
-    })
-    
     return driver
 
-# --- 2. Extraction Intelligente (Stratégie 'Argent') ---
-def extract_menu_data(soup):
-    data = []
-    seen_texts = set()
+def extract_json_data(soup):
+    # Glovo (et Next.js) stockent tout ici
+    script_tag = soup.find("script", {"id": "__NEXT_DATA__"})
     
-    # Regex pour trouver les prix (MAD, Dhs, etc)
-    price_pattern = re.compile(r'(\d+[\.,]?\d*\s*(?:MAD|Dhs|DH|€|\$)|(?:MAD|Dhs|DH|€|\$)\s*\d+[\.,]?\d*)', re.IGNORECASE)
+    if not script_tag:
+        return None, "Balise __NEXT_DATA__ introuvable."
     
-    # On cherche tous les textes
-    all_elements = soup.find_all(['div', 'span', 'p'])
-    
-    for el in all_elements:
-        text = el.get_text(" | ", strip=True)
+    try:
+        json_content = json.loads(script_tag.string)
         
-        # Si le texte contient un prix ET n'est pas trop long (pour éviter de prendre tout le footer)
-        if price_pattern.search(text) and 10 < len(text) < 300:
-            if text not in seen_texts:
+        # On va chercher récursivement tous les produits dans cet énorme objet JSON
+        # Car la structure change souvent (props -> pageProps -> initialStoreState...)
+        products = []
+        
+        # Fonction récursive pour fouiller le JSON
+        def search_dict(d):
+            if isinstance(d, dict):
+                # Si on trouve un objet qui ressemble à un produit (a un nom et un prix)
+                if 'name' in d and 'price' in d:
+                    try:
+                        products.append({
+                            'Nom': d.get('name'),
+                            'Prix': d.get('price'),
+                            'Description': d.get('description', ''),
+                            'Catégorie': d.get('categoryName', 'Inconnue') # Parfois disponible
+                        })
+                    except:
+                        pass
                 
-                # Extraction basique
-                match_price = price_pattern.search(text)
-                prix = match_price.group(0)
-                
-                # On essaie de séparer le titre
-                parts = text.split('|')
-                titre = parts[0].strip()
-                if len(titre) < 3 and len(parts) > 1: titre = parts[1].strip()
-                
-                data.append({
-                    'Produit (Deviné)': titre,
-                    'Prix': prix,
-                    'Texte Complet': text
-                })
-                seen_texts.add(text)
-    
-    return data
+                # Continuer à fouiller
+                for key, value in d.items():
+                    search_dict(value)
+            
+            elif isinstance(d, list):
+                for item in d:
+                    search_dict(item)
 
-# --- 3. Interface ---
-url = st.text_input("URL du Menu (Glovo, etc.)", placeholder="https://glovoapp.com/...")
+        search_dict(json_content)
+        return products, "Succès"
+        
+    except Exception as e:
+        return None, f"Erreur lecture JSON : {e}"
 
-if st.button("Lancer l'Extraction Furtive 🕵️‍♂️"):
+# --- Interface ---
+url = st.text_input("URL Glovo Casablanca", placeholder="https://glovoapp.com/...")
+
+if st.button("Extraire les données cachées 🧬"):
     if url:
         status = st.empty()
-        status.info("Démarrage du mode furtif...")
+        status.info("Connexion au site...")
         
-        driver = None
+        driver = get_driver()
         try:
-            driver = get_driver()
-            
-            status.info("Connexion au site...")
             driver.get(url)
+            time.sleep(5) # On laisse le temps au redirection éventuelle
             
-            # Pause aléatoire pour faire 'humain'
-            time.sleep(random.uniform(3, 5))
-            
-            status.info("Simulation de lecture (Scroll)...")
-            # On scroll doucement
-            for i in range(1, 5):
-                driver.execute_script(f"window.scrollTo(0, document.body.scrollHeight * {i/5});")
-                time.sleep(random.uniform(1, 2))
-            
-            # Scroll final
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(3)
-            
-            status.info("Analyse du contenu chargé...")
+            status.info("Récupération du code source...")
             html = driver.page_source
             soup = BeautifulSoup(html, 'html.parser')
             
-            results = extract_menu_data(soup)
+            # Vérification du titre pour voir si on a été redirigé
+            page_title = driver.title
+            st.caption(f"Titre de la page atteinte : {page_title}")
             
-            if results:
-                st.success(f"Réussite ! {len(results)} éléments extraits.")
-                df = pd.DataFrame(results)
-                st.dataframe(df, use_container_width=True)
+            status.info("Recherche des données JSON...")
+            data, message = extract_json_data(soup)
+            
+            if data and len(data) > 0:
+                st.success(f"BINGO ! {len(data)} produits extraits depuis le code caché.")
+                df = pd.DataFrame(data)
                 
+                # Nettoyage : Supprimer les doublons exacts
+                df = df.drop_duplicates(subset=['Nom'])
+                
+                st.dataframe(df, use_container_width=True)
                 csv = df.to_csv(index=False).encode('utf-8')
-                st.download_button("Télécharger CSV", csv, "menu_furtif.csv", "text/csv")
+                st.download_button("Télécharger CSV", csv, "glovo_data.csv", "text/csv")
             else:
-                st.warning("Le site résiste encore. Il charge peut-être les données via une API cachée.")
-                # Debug léger pour voir si on a passé la barrière Next.js
-                debug_title = soup.title.string if soup.title else "Sans titre"
-                st.text(f"Titre de la page capturée : {debug_title}")
-
+                st.error(f"Échec : {message}")
+                st.warning("""
+                **Diagnostic :** Si le titre est juste "Glovo" et qu'aucune donnée ne sort, c'est que **Glovo bloque l'IP du serveur Streamlit** (Géolocalisation).
+                
+                👉 **Solution :** Vous devez lancer ce script **sur votre propre ordinateur** (Localhost) et pas sur le Cloud. Sur votre PC, vous avez une IP marocaine, donc Glovo affichera le menu.
+                """)
+                
         except Exception as e:
             st.error(f"Erreur : {e}")
         finally:
-            if driver: driver.quit()
-            status.empty()
+            driver.quit()
