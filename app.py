@@ -3,126 +3,145 @@ import pandas as pd
 from bs4 import BeautifulSoup
 import time
 import re
+import random
 
-# Selenium imports
+# Selenium & Webdriver Manager
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
-st.set_page_config(page_title="Scraper Glovo Force", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Scraper Menu Furtif", page_icon="🥷", layout="wide")
 
-st.title("⚡ Auto-Scraper : Mode 'Chercher l'Argent'")
+st.title("🥷 Auto-Scraper : Mode Furtif (Anti-Bot)")
 st.markdown("""
-Ce mode ignore la structure du site. Il cherche simplement **le symbole monétaire (MAD, Dhs)** et capture le texte autour. Très efficace pour les sites difficiles.
+Ce mode utilise des techniques avancées pour masquer le robot Selenium :
+* Modification du User-Agent
+* Désactivation des indicateurs d'automatisation
+* Masquage de la variable `navigator.webdriver`
 """)
 
-# --- 1. Configuration Navigateur ---
+# --- 1. Configuration Navigateur Furtif ---
 def get_driver():
     chrome_options = Options()
-    chrome_options.add_argument("--headless")
+    
+    # --- LES REGLAGES CRITIQUES POUR EVITER LE BLOCAGE ---
+    chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--window-size=1920,1080") # Important pour voir tout le menu
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled") # Masque le contrôle auto
+    
+    # On se fait passer pour un vrai PC Windows avec Chrome récent
+    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    chrome_options.add_argument(f"user-agent={user_agent}")
+    chrome_options.add_argument("--window-size=1920,1080")
     
     try:
+        # Configuration Streamlit Cloud
         service = Service("/usr/bin/chromedriver")
         driver = webdriver.Chrome(service=service, options=chrome_options)
     except Exception:
+        # Configuration Locale (PC)
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
+
+    # --- L'ASTUCE ULTIME ---
+    # On injecte du Javascript pour effacer les traces de Selenium
+    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+        "source": """
+            Object.defineProperty(navigator, 'webdriver', {
+            get: () => undefined
+            })
+        """
+    })
+    
     return driver
 
-# --- 2. Nouvelle Logique de Détection ---
-def extract_by_currency(soup):
+# --- 2. Extraction Intelligente (Stratégie 'Argent') ---
+def extract_menu_data(soup):
     data = []
-    seen_texts = set() # Pour éviter les doublons
+    seen_texts = set()
     
-    # On cherche le texte visible qui contient un prix
-    # Regex : Chiffre + Espace(optionnel) + (MAD ou Dhs ou DH)
+    # Regex pour trouver les prix (MAD, Dhs, etc)
     price_pattern = re.compile(r'(\d+[\.,]?\d*\s*(?:MAD|Dhs|DH|€|\$)|(?:MAD|Dhs|DH|€|\$)\s*\d+[\.,]?\d*)', re.IGNORECASE)
     
-    # On trouve tous les élements terminaux (bout de texte) qui contiennent un prix
-    price_elements = soup.find_all(string=price_pattern)
+    # On cherche tous les textes
+    all_elements = soup.find_all(['div', 'span', 'p'])
     
-    for price_text in price_elements:
-        # On remonte de 3 niveaux pour attraper le conteneur du plat (Titre + Desc + Prix)
-        container = price_text.find_parent()
+    for el in all_elements:
+        text = el.get_text(" | ", strip=True)
         
-        # On essaie de remonter jusqu'à trouver un bloc cohérent (div)
-        for _ in range(4):
-            if container.name in ['div', 'article', 'li'] and len(container.get_text(strip=True)) > 10:
-                break
-            if container.parent:
-                container = container.parent
-        
-        full_text = container.get_text(" | ", strip=True)
-        
-        # Nettoyage et Filtres
-        if full_text not in seen_texts:
-            # On ignore les textes trop longs (c'est probablement tout le site) ou trop courts
-            if 10 < len(full_text) < 400:
+        # Si le texte contient un prix ET n'est pas trop long (pour éviter de prendre tout le footer)
+        if price_pattern.search(text) and 10 < len(text) < 300:
+            if text not in seen_texts:
                 
                 # Extraction basique
-                match_price = price_pattern.search(full_text)
-                prix = match_price.group(0) if match_price else "N/A"
+                match_price = price_pattern.search(text)
+                prix = match_price.group(0)
                 
-                # Le titre est souvent la partie avant le prix ou au début
-                parts = full_text.split('|')
+                # On essaie de séparer le titre
+                parts = text.split('|')
                 titre = parts[0].strip()
+                if len(titre) < 3 and len(parts) > 1: titre = parts[1].strip()
                 
-                # Si le titre est le prix, on prend le suivant
-                if titre in prix and len(parts) > 1:
-                    titre = parts[1].strip()
-
                 data.append({
-                    'Titre Estimé': titre,
+                    'Produit (Deviné)': titre,
                     'Prix': prix,
-                    'Texte Complet': full_text
+                    'Texte Complet': text
                 })
-                seen_texts.add(full_text)
+                seen_texts.add(text)
     
     return data
 
 # --- 3. Interface ---
-url = st.text_input("URL Glovo / Jumia / etc :", placeholder="https://glovoapp.com/...")
+url = st.text_input("URL du Menu (Glovo, etc.)", placeholder="https://glovoapp.com/...")
 
-if st.button("Lancer le Scan 🕵️"):
+if st.button("Lancer l'Extraction Furtive 🕵️‍♂️"):
     if url:
         status = st.empty()
-        status.info("Démarrage du navigateur...")
+        status.info("Démarrage du mode furtif...")
         
-        driver = get_driver()
+        driver = None
         try:
+            driver = get_driver()
+            
+            status.info("Connexion au site...")
             driver.get(url)
-            status.info("Chargement... (Veuillez patienter 5s)")
-            time.sleep(5)
             
-            # Gros scroll pour être sûr
-            status.info("Scroll vers le bas pour charger les images...")
-            for i in range(3):
-                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(2)
+            # Pause aléatoire pour faire 'humain'
+            time.sleep(random.uniform(3, 5))
             
-            status.info("Extraction des données...")
-            soup = BeautifulSoup(driver.page_source, 'html.parser')
+            status.info("Simulation de lecture (Scroll)...")
+            # On scroll doucement
+            for i in range(1, 5):
+                driver.execute_script(f"window.scrollTo(0, document.body.scrollHeight * {i/5});")
+                time.sleep(random.uniform(1, 2))
             
-            results = extract_by_currency(soup)
+            # Scroll final
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(3)
+            
+            status.info("Analyse du contenu chargé...")
+            html = driver.page_source
+            soup = BeautifulSoup(html, 'html.parser')
+            
+            results = extract_menu_data(soup)
             
             if results:
-                st.success(f"Bingo ! {len(results)} plats trouvés via détection de devise.")
+                st.success(f"Réussite ! {len(results)} éléments extraits.")
                 df = pd.DataFrame(results)
                 st.dataframe(df, use_container_width=True)
                 
                 csv = df.to_csv(index=False).encode('utf-8')
-                st.download_button("Télécharger CSV", csv, "menu_extract.csv", "text/csv")
+                st.download_button("Télécharger CSV", csv, "menu_furtif.csv", "text/csv")
             else:
-                st.error("Toujours rien. Le site utilise peut-être des iframes ou bloque l'IP.")
-                st.text("Debug - HTML partiel : " + str(driver.page_source)[:500])
-                
+                st.warning("Le site résiste encore. Il charge peut-être les données via une API cachée.")
+                # Debug léger pour voir si on a passé la barrière Next.js
+                debug_title = soup.title.string if soup.title else "Sans titre"
+                st.text(f"Titre de la page capturée : {debug_title}")
+
         except Exception as e:
-            st.error(f"Erreur technique : {e}")
+            st.error(f"Erreur : {e}")
         finally:
-            driver.quit()
+            if driver: driver.quit()
             status.empty()
